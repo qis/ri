@@ -1,0 +1,17 @@
+html {
+  font-family: sans-serif;
+}
+
+h1, p.author {
+  text-align: center;
+}
+
+/* Cover sizes: 
+ * 1072 x 1448
+ *  536 x 724
+ *  268 x 362 */
+
+#cover-image > img {
+  object-fit: cover;
+  width: 100%;
+}
