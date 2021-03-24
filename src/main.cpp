@@ -1,4 +1,5 @@
 #include "book.hpp"
+#include <exception>
 #include <filesystem>
 
 namespace beast = boost::beast;
@@ -137,58 +138,104 @@ inline node get_root(document& document)
 
 class client {
 public:
-  client(net::io_context& context, std::string host)
-    : host_(std::move(host)),
-      context_(ssl::context::tlsv13_client),
-      stream_(context, context_)
-  {
-    context_.set_verify_mode(ssl::verify_none);
-    if (!SSL_set_tlsext_host_name(stream_.native_handle(), host_.data())) {
-      beast::error_code ec{ static_cast<int>(::ERR_get_error()), net::error::get_ssl_category() };
-      throw beast::system_error{ ec, "ssl" };
-    }
-  }
+  client(std::string host) :
+    io_context_(1),
+    work_(io_context_.get_executor()),
+    host_(std::move(host))
+  {}
 
   client(client&& other) = delete;
   client(const client& other) = delete;
   client& operator=(client&& other) = delete;
   client& operator=(const client& other) = delete;
 
-  net::awaitable<void> connect()
+  void start()
   {
-    auto executor = co_await net::this_coro::executor;
-
-    tcp::resolver resolver{ executor };
-    const auto results = co_await resolver.async_resolve(host_.data(), "https", net::use_awaitable);
-
-    co_await beast::get_lowest_layer(stream_).async_connect(results, net::use_awaitable);
-    co_await stream_.async_handshake(ssl::stream_base::client, net::use_awaitable);
-    co_return;
+    thread_ = std::thread([this]() {
+      io_context_.run();
+    });
   }
 
-  net::awaitable<void> shutdown()
+  void stop()
   {
-    beast::error_code ec;
-    co_await stream_.async_shutdown(net::redirect_error(net::use_awaitable, ec));
-    if (ec != ssl::error::stream_truncated) {
-      std::cerr << "warning: socket shutdown failed: " << ec.message() << std::endl;
+    const auto op = [this]() -> net::awaitable<void> {
+      if (stream_) {
+        beast::error_code ec;
+        co_await stream_->async_shutdown(net::redirect_error(net::use_awaitable, ec));
+        if (ec != ssl::error::stream_truncated) {
+          std::cerr << "warning: socket shutdown failed: " << ec.message() << std::endl;
+        }
+        beast::get_lowest_layer(*stream_).close();
+        stream_ = std::nullopt;
+        context_ = std::nullopt;
+      }
+    };
+
+    net::co_spawn(io_context_, op, net::use_awaitable);
+    work_.reset();
+
+    if (thread_.joinable()) {
+      thread_.join();
     }
-    beast::get_lowest_layer(stream_).close();
-    co_return;
   }
 
   net::awaitable<std::string> get(const std::string& path)
   {
-    auto executor = co_await net::this_coro::executor;
+    std::exception_ptr exception;
+
+    const auto op = [&]() noexcept -> net::awaitable<std::string> {
+      try {
+        co_return co_await get_impl(path);
+      }
+      catch (...) {
+        exception = std::current_exception();
+      }
+      co_return std::string{};
+    };
+
+    const auto body = io_context_.get_executor() != co_await net::this_coro::executor
+      ? co_await net::co_spawn(io_context_, op, net::use_awaitable)
+      : co_await op();
+
+    if (exception) {
+      std::rethrow_exception(exception);
+    }
+
+    co_return body;
+  }
+
+private:
+  net::awaitable<std::string> get_impl(const std::string& path)
+  {
+    if (!context_) {
+      ssl::context context{ ssl::context::tlsv13_client };
+      context.set_verify_mode(ssl::verify_none);
+      context_ = std::move(context);
+    }
+
+    if (!stream_) {
+      beast::ssl_stream<beast::tcp_stream> stream{ io_context_, *context_ };
+      if (!SSL_set_tlsext_host_name(stream.native_handle(), host_.data())) {
+        beast::error_code ec{ static_cast<int>(::ERR_get_error()), net::error::get_ssl_category() };
+        throw beast::system_error{ ec, "ssl" };
+      }
+
+      tcp::resolver resolver{ co_await net::this_coro::executor };
+      const auto results = co_await resolver.async_resolve(host_.data(), "https", net::use_awaitable);
+
+      co_await beast::get_lowest_layer(stream).async_connect(results, net::use_awaitable);
+      co_await stream.async_handshake(ssl::stream_base::client, net::use_awaitable);
+      stream_ = std::move(stream);
+    }
 
     http::request<http::string_body> request{ http::verb::get, path, 11 };
     request.set(http::field::host, host_);
     request.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
-    co_await http::async_write(stream_, request, net::use_awaitable);
+    co_await http::async_write(*stream_, request, net::use_awaitable);
 
     beast::flat_buffer buffer;
     http::response_parser<http::string_body> parser;
-    co_await http::async_read_header(stream_, buffer, parser, net::use_awaitable);
+    co_await http::async_read_header(*stream_, buffer, parser, net::use_awaitable);
     if (parser.get().result() != http::status::ok) {
       const auto status = parser.get().result();
       std::ostringstream oss;
@@ -202,21 +249,24 @@ public:
     };
     parser.on_chunk_body(on_body);
 
-    co_await http::async_read(stream_, buffer, parser, net::use_awaitable);
+    co_await http::async_read(*stream_, buffer, parser, net::use_awaitable);
     co_return parser.get().body();
   }
 
-private:
+  std::thread thread_;
+  net::io_context io_context_;
+  net::executor_work_guard<net::io_context::executor_type> work_;
+  std::optional<ssl::context> context_;
+  std::optional<beast::ssl_stream<beast::tcp_stream>> stream_;
   std::string host_;
-  ssl::context context_;
-  beast::ssl_stream<beast::tcp_stream> stream_;
 };
 
 class application {
 public:
-  application(int threads = static_cast<int>(std::thread::hardware_concurrency()))
-    : threads_(threads),
-      context_(threads)
+  application(int threads = static_cast<int>(std::thread::hardware_concurrency())) :
+    client_("novelfull.com"),
+    threads_(threads),
+    io_context_(threads)
   {}
 
   application(application&& other) = delete;
@@ -227,19 +277,21 @@ public:
   int run(bool make) noexcept
   {
     try {
-      for (std::size_t i = 1; i <= 2301; i++) {
-        net::co_spawn(context_, process(i, make), net::detached);
+      client_.start();
+
+      for (std::size_t i = 1; i <= 2302; i++) {
+        net::co_spawn(io_context_, process(i, make), net::detached);
       }
 
       std::vector<std::thread> threads;
       threads.resize(static_cast<std::size_t>(threads_));
       for (int i = 1; i < threads_; i++) {
         threads.emplace_back([this]() {
-          context_.run();
+          io_context_.run();
         });
       }
 
-      context_.run();
+      io_context_.run();
 
       for (auto& thread : threads) {
         if (thread.joinable()) {
@@ -275,6 +327,8 @@ public:
       std::cerr << "unexpected exception" << std::endl;
       result_ = EXIT_FAILURE;
     }
+
+    client_.stop();
     return result_;
   }
 
@@ -285,8 +339,6 @@ private:
     using std::filesystem::last_write_time;
 
     try {
-      co_await net::this_coro::executor;
-
       const auto man = cache(index);
       const auto src = cache("src", index);
       const auto txt = cache("txt", index);
@@ -301,9 +353,7 @@ private:
 
       // Download source.
       if (!is_regular_file(src)) {
-        // TODO: Make sure asio uses strand for download.
-        //write(src, co_await download(index));
-        throw std::runtime_error("missing html file");
+        write(src, co_await download(index));
       }
 
       // Use cached text file.
@@ -342,26 +392,12 @@ private:
 
   net::awaitable<std::string> download(std::size_t index)
   {
-    if (!client_) {
-      client_.emplace(context_, "novelfull.com");
-      try {
-        {
-          std::lock_guard lock{ mutex_ };
-          std::cout << "connecting to server ..." << std::endl;
-        }
-        co_await client_->connect();
-      }
-      catch (...) {
-        client_ = std::nullopt;
-        throw;
-      }
-    }
     {
       std::lock_guard lock{ mutex_ };
       std::cout << "downloading chapter " << index << " ..." << std::endl;
     }
     const auto path = "/reverend-insanity/chapter-" + std::to_string(index) + ".html";
-    const auto data = co_await client_->get(path);
+    const auto data = co_await client_.get(path);
     co_return data;
   }
 
@@ -482,10 +518,10 @@ private:
   }
 
   book book_;
+  client client_;
   int threads_ = 1;
   std::mutex mutex_;
-  net::io_context context_;
-  std::optional<client> client_;
+  net::io_context io_context_;
   std::map<std::size_t, std::string> chapters_;
 
   int result_ = EXIT_SUCCESS;

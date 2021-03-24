@@ -86,8 +86,7 @@ std::string book::format(std::size_t index, std::vector<std::string> lines)
 
   lines.erase(
     std::remove_if(
-      lines.begin(),
-      lines.end(),
+      lines.begin(), lines.end(),
       [](const auto& s) {
         return s.empty();
       }),
