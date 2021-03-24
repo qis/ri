@@ -8,13 +8,22 @@ Install boost.
 sudo mkdir /opt/boost
 sudo chown $(id -u):$(id -g) /opt/boost
 
-./bootstrap.sh
+CC=gcc-10 CXX=g++-10 ./bootstrap.sh
 
+# clang + libc++
 cat > config.jam <<'EOF'
-using clang-linux : 11.0.0 : /usr/bin/clang++ :
+using clang-linux : 11.0.0 : /usr/bin/clang++-11 :
 <cxxstd> "20"
 <cxxflags> "-stdlib=libc++ -flto=full"
 <linkflags> "-fuse-ld=lld -Wl,--as-needed -Wl,-s" ;
+EOF
+
+# gcc + libstdc++
+cat > config.jam <<'EOF'
+using gcc : 10.2.0 : /usr/bin/g++-10 :
+<cxxstd> "20"
+<cxxflags> "-fcoroutines -flto"
+<linkflags> "-Wl,--as-needed -Wl,-s" ;
 EOF
 
 ./b2 --project-config=config.jam --prefix=/opt/boost \

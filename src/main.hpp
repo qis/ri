@@ -44,6 +44,7 @@ using namespace std::literals::string_view_literals;
 #include <boost/beast/core.hpp>
 #include <boost/beast/core/stream_traits.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/http/error.hpp>
 #include <boost/beast/http/parser.hpp>
 #include <boost/beast/ssl.hpp>
 #include <boost/beast/version.hpp>
