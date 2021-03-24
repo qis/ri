@@ -141,6 +141,7 @@ class client {
 public:
   client(std::string host) :
     io_context_(1),
+    strand_(net::make_strand(io_context_.get_executor())),
     work_(io_context_.get_executor()),
     host_(std::move(host))
   {}
@@ -172,7 +173,7 @@ public:
       }
     };
 
-    net::co_spawn(io_context_, op, net::detached);
+    net::co_spawn(strand_, op, net::detached);
     work_.reset();
 
     if (thread_.joinable()) {
@@ -188,9 +189,11 @@ public:
       co_return co_await get(path, ec);
     };
 
-    const auto body = io_context_.get_executor() != co_await net::this_coro::executor
-      ? co_await net::co_spawn(io_context_, op, net::use_awaitable)
-      : co_await op();
+    //const auto body = strand_ != co_await net::this_coro::executor
+    //  ? co_await net::co_spawn(strand_, op, net::use_awaitable)
+    //  : co_await op();
+
+    const auto body = co_await net::co_spawn(strand_, op, net::use_awaitable);
 
     if (ec) {
       throw beast::system_error(ec, "get");
@@ -215,7 +218,7 @@ private:
     std::cout << path << ' ' << step++ << std::endl;
 
     if (!stream_) {
-      beast::ssl_stream<beast::tcp_stream> stream{ io_context_, *context_ };
+      beast::ssl_stream<beast::tcp_stream> stream{ strand_, *context_ };
       if (!SSL_set_tlsext_host_name(stream.native_handle(), host_.data())) {
         ec = { static_cast<int>(::ERR_get_error()), net::error::get_ssl_category() };
         co_return std::string{};
@@ -282,6 +285,7 @@ private:
 
   std::thread thread_;
   net::io_context io_context_;
+  net::strand<net::io_context::executor_type> strand_;
   net::executor_work_guard<net::io_context::executor_type> work_;
   std::optional<ssl::context> context_;
   std::optional<beast::ssl_stream<beast::tcp_stream>> stream_;
