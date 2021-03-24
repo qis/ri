@@ -203,26 +203,35 @@ public:
   }
 
 private:
+  void print(const std::string& path, std::string_view message)
+  {
+    const auto ok = std::this_thread::get_id() == thread_.get_id() ? "ok" : "INVALID THREAD";
+    std::cout << path << ' ' << ok << ' ' << message << std::endl;
+  }
+
   net::awaitable<std::string> get(const std::string& path, beast::error_code& ec) noexcept
   {
-    std::size_t step = 0;
-    std::cout << path << ' ' << step++ << std::endl;
+    print(path, "start");
+
     if (!context_) {
+      print(path, "initializing context");
       ssl::context context{ ssl::context::tlsv13_client };
       context.set_verify_mode(ssl::verify_none, ec);
       if (ec) {
         co_return std::string{};
       }
       context_ = std::move(context);
+      print(path, "context initialized");
     }
-    std::cout << path << ' ' << step++ << std::endl;
 
     if (!stream_) {
+      print(path, "initializing stream");
       beast::ssl_stream<beast::tcp_stream> stream{ strand_, *context_ };
       if (!SSL_set_tlsext_host_name(stream.native_handle(), host_.data())) {
         ec = { static_cast<int>(::ERR_get_error()), net::error::get_ssl_category() };
         co_return std::string{};
       }
+      print(path, "host name set");
 
       tcp::resolver resolver{ co_await net::this_coro::executor };
       const auto results = co_await resolver.async_resolve(
@@ -230,20 +239,23 @@ private:
       if (ec) {
         co_return std::string{};
       }
+      print(path, "host name resolved");
 
       co_await beast::get_lowest_layer(stream).async_connect(
         results, net::redirect_error(net::use_awaitable, ec));
       if (ec) {
         co_return std::string{};
       }
+      print(path, "stream connected");
+
       co_await stream.async_handshake(
         ssl::stream_base::client, net::redirect_error(net::use_awaitable, ec));
       if (ec) {
         co_return std::string{};
       }
       stream_ = std::move(stream);
+      print(path, "stream initialized");
     }
-    std::cout << path << ' ' << step++ << std::endl;
 
     http::request<http::string_body> request{ http::verb::get, path, 11 };
     request.set(http::field::host, host_);
@@ -252,7 +264,7 @@ private:
     if (ec) {
       co_return std::string{};
     }
-    std::cout << path << ' ' << step++ << std::endl;
+    print(path, "request sent");
 
     beast::flat_buffer buffer;
     http::response_parser<http::string_body> parser;
@@ -266,20 +278,20 @@ private:
       ec = http::make_error_code(http::error::bad_status);
       co_return std::string{};
     }
-    std::cout << path << ' ' << step++ << std::endl;
+    print(path, "header read");
 
     auto on_body = [&](std::uint64_t size, std::string_view data, beast::error_code& ec) {
       parser.get().body().append(data.data(), data.size());
       return data.size();
     };
     parser.on_chunk_body(on_body);
-    std::cout << path << ' ' << step++ << std::endl;
 
     co_await http::async_read(*stream_, buffer, parser, net::redirect_error(net::use_awaitable, ec));
     if (ec) {
       co_return std::string{};
     }
-    std::cout << path << ' ' << step++ << std::endl;
+    print(path, "body read");
+
     co_return parser.get().body();
   }
 
