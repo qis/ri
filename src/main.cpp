@@ -322,7 +322,7 @@ public:
     try {
       client_.start();
 
-      for (std::size_t i = 1; i <= 2302; i++) {
+      for (std::size_t i = 2301; i <= 2302; i++) {
         net::co_spawn(io_context_, process(i, make), net::detached);
       }
 
@@ -382,6 +382,10 @@ private:
     using std::filesystem::last_write_time;
 
     try {
+      // DEBUG
+      co_await download(index);
+
+      /*
       const auto man = cache(index);
       const auto src = cache("src", index);
       const auto txt = cache("txt", index);
@@ -419,6 +423,7 @@ private:
         std::lock_guard lock{ mutex_ };
         chapters_[index] = std::move(text);
       }
+      */
     }
     catch (const std::exception& e) {
       std::lock_guard lock{ mutex_ };

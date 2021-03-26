@@ -1,29 +1,28 @@
 # Reverend Insanity
 Downloads Reverend Insanity by Gu Zhen Ren and generates ebook files.
 
-## Boost
-Install boost.
+## Dependencies
+Install dependencies.
 
 ```sh
+sudo apt install binutils-dev make ninja-build
+sudo apt install clang-11 llvm-11 lld-11 lldb-11 libc++-11-dev libc++abi-11-dev
+sudo apt install libssl-dev libutf8proc-dev libxml2-dev
+sudo apt install calibre pandoc
+
 sudo mkdir /opt/boost
 sudo chown $(id -u):$(id -g) /opt/boost
 
-CC=gcc-10 CXX=g++-10 ./bootstrap.sh
+wget https://dl.bintray.com/boostorg/release/1.75.0/source/boost_1_75_0.tar.bz2
+mkdir boost && tar xf boost_1_75_0.tar.bz2 -C boost --strip-components=1; cd boost
 
-# clang + libc++
+CC=clang-11 CXX=clang++-11 ./bootstrap.sh
+
 cat > config.jam <<'EOF'
 using clang-linux : 11.0.0 : /usr/bin/clang++-11 :
 <cxxstd> "20"
 <cxxflags> "-stdlib=libc++ -flto=full"
 <linkflags> "-fuse-ld=lld -Wl,--as-needed -Wl,-s" ;
-EOF
-
-# gcc + libstdc++
-cat > config.jam <<'EOF'
-using gcc : 10.2.0 : /usr/bin/g++-10 :
-<cxxstd> "20"
-<cxxflags> "-fcoroutines -flto"
-<linkflags> "-Wl,--as-needed -Wl,-s" ;
 EOF
 
 ./b2 --project-config=config.jam --prefix=/opt/boost \
